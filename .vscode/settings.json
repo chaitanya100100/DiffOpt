@@ -1,0 +1,6 @@
+{
+    "files.exclude": {
+        "data/": true,
+        "**/__pycache__": true,
+    }
+}
