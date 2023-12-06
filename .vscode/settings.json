@@ -2,5 +2,9 @@
     "files.exclude": {
         "data/": true,
         "**/__pycache__": true,
+    },
+    "search.exclude": {
+        "data/": true,
+        "**/__pycache__": true,
     }
 }
