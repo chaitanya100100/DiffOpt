@@ -107,6 +107,7 @@ class MeshViewer(object):
         # background image sequence
         self.img_seq = None
         self.cur_bg_img = None
+        self.camera_seq = None
 
         self.single_frame = False
 
@@ -358,6 +359,11 @@ class MeshViewer(object):
             pyrender_point_seq.append(pyrender.Mesh.from_trimesh(sm.copy(), poses=tfs))
         self.add_pyrender_mesh_seq(pyrender_point_seq, seq_type="point")
 
+    def add_camera_seq(self, camera_seq):
+        if not self.check_animation_len(len(camera_seq)):
+            return
+        self.camera_seq = camera_seq
+
     def add_line_seq(self, line_seq, color=[0.0, 0.0, 0.0]):
         """Add a sequence of lines to be rendered."""
         if not self.check_animation_len(len(line_seq)):
@@ -435,6 +441,10 @@ class MeshViewer(object):
             anim_node = list(self.scene.get_nodes(name="anim-mesh-%2d" % (seq_idx)))[0]
             anim_node.mesh = cur_mesh
             self.release_render_lock()
+
+        # update camera pose
+        if self.camera_seq is not None:
+            self.update_camera(self.camera_seq[self.animation_frame_idx])
 
         # update background img
         if self.img_seq is not None:

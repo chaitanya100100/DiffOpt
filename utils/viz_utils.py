@@ -291,9 +291,10 @@ def viz_smpl(bmout, faces, cam=None):
     )
 
     meshes = []
+    cam_seq = []
     for i in range(bmout.vertices.shape[0]):
         if cam is not None:
-            mv.update_camera({k: dcn(v[i]) for k, v in cam.items()})
+            cam_seq.append({k: dcn(v[i]) for k, v in cam.items()})
 
         ms = pyrender.Mesh.from_trimesh(
             trimesh.Trimesh(
@@ -303,7 +304,9 @@ def viz_smpl(bmout, faces, cam=None):
         )
         meshes.append(ms)
     mv.add_pyrender_mesh_seq(meshes, seq_type="mesh")
-    mv.add_point_seq(bmout.joints)
+    # mv.add_point_seq(dcn(bmout.joints))
+    if cam is not None:
+        mv.add_camera_seq(cam_seq)
     if bmout.vertices.shape[0] == 1:
         return mv.render()[None]
     else:
@@ -318,7 +321,7 @@ def show_points(j2d, imgs):
             x, y = pt[:2]
             if pt.shape[0] == 3 and pt[2] < 0.1:
                 continue
-            cv2.circle(img, (int(x), int(y)), 2, (0, 255, 0), -1)
+            cv2.circle(img, (int(x), int(y)), 3, (0, 255, 0), -1)
         ret.append(img)
     ret = np.stack(ret)
     return ret
