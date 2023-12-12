@@ -2,7 +2,7 @@
 Course project for CS236 by Chaitanya Patel and Apoorv Srivastava
 
 ## More Results
-Input 2D keypoints(left), generated poses with three values of w (middle), groundtruth (right).
+Input 2D keypoints(left), generated poses with three values of w 0.0/0.5/2.0 (middle), groundtruth (right).
 Green keypoints are input conditioning. Red keypoints correspond to the generated poses.
 
 ![1.png](./assets/1.png)
