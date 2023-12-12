@@ -313,7 +313,9 @@ def viz_smpl(bmout, faces, cam=None):
         return mv.animate()
 
 
-def show_points(j2d, imgs):
+def show_points(j2d, imgs, color="green"):
+    assert color in ["green", "red", "blue"]
+    color = {"green": (0, 255, 0), "red": (255, 0, 0), "blue": (0, 0, 255)}[color]
     ret = []
     for img, j in zip(imgs, j2d):
         img = img.copy()
@@ -321,7 +323,7 @@ def show_points(j2d, imgs):
             x, y = pt[:2]
             if pt.shape[0] == 3 and pt[2] < 0.1:
                 continue
-            cv2.circle(img, (int(x), int(y)), 3, (0, 255, 0), -1)
+            cv2.circle(img, (int(x), int(y)), 3, color, -1)
         ret.append(img)
     ret = np.stack(ret)
     return ret

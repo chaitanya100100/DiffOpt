@@ -6,8 +6,8 @@ class Config:
 
     # model
     model_type = "mlp"
-    num_layers = None
-    hidden_dim = None
+    num_layers = 4
+    hidden_dim = 512
     activation = "gelu"
     act_normalization = "batch"
     ckpt_path = None

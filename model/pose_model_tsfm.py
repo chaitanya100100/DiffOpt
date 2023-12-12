@@ -1,6 +1,14 @@
-import math
+# import math
 import torch
 import torch.nn as nn
+
+# from utils.smpl import MySMPL
+# from pytorch3d.transforms.rotation_conversions import (
+#     axis_angle_to_matrix,
+#     matrix_to_rotation_6d,
+#     rotation_6d_to_matrix,
+# )
+# from utils.ddpm_utils import projection, j2d_to_y
 
 
 class mySequential(nn.Sequential):
@@ -366,74 +374,85 @@ class TBlockGeneral(nn.Module):
         return x
 
 
-class Overfit(torch.nn.Module):
-    def __init__(self, num_pred_params, *args, **kwargs):
-        super().__init__()
-        self.param = torch.nn.Parameter(torch.rand(1, num_pred_params) * 0.02)
-
-    def forward(self, *args, **kwargs):
-        return self.param
-
-
 class PoseTransformer(nn.Module):
     def __init__(self, cfg):
         super().__init__()
+        self.hidden_dim = 256
+        self.num_heads = 8
+        self.num_kps = 25
+        self.num_joints = 24
+        self.num_enc_layers = 4
+        self.num_dec_layers = 4
+        self.mlp_ratio = 2
 
-        self.denoise = MyResMLP(
-            input_dim=cfg.x_dim,
-            output_dim=cfg.x_dim,
-            hidden_dim=cfg.hidden_dim,
-            activation=get_activation(cfg.activation),
-            num_hiddens=cfg.num_layers,
-            act_normalization=get_act_normalization(cfg.act_normalization),
-            time_dim=cfg.hidden_dim,
-        )
-        self.t_emb = nn.Linear(1, cfg.hidden_dim)
-        self.y_emb = nn.Linear(cfg.y_dim, cfg.hidden_dim)
-        self.ty_emb = MyResMLP(
-            input_dim=cfg.hidden_dim * 2,
-            output_dim=cfg.hidden_dim,
-            hidden_dim=cfg.hidden_dim,
-            activation=get_activation(cfg.activation),
-            num_hiddens=2,
-            act_normalization=get_act_normalization(cfg.act_normalization),
-            time_dim=cfg.hidden_dim,
-        )
+        D = self.hidden_dim
+        K = self.num_kps
+        P = self.num_joints
 
-        self.smpl = MySMPL()
+        self.kp_pos_emb = nn.Parameter(torch.randn(K, D) * 0.02)
+        self.x_pos_emb = nn.Parameter(torch.randn(P, D) * 0.02)
+        self.t_emb = nn.Sequential(nn.Linear(1, D), Mlp(D, 2 * D, D), Mlp(D, 2 * D, D))
+        self.kp_emb = nn.Linear(2, D)
+        self.x_emb = nn.Linear(6, D)
 
-    def get_cur_y(self, x, data):
-        device = x.device
+        self.enc_layers = []
+        for _ in range(self.num_enc_layers):
+            self.enc_layers.append(Block(D, self.num_heads, mlp_ratio=self.mlp_ratio))
+        self.x_enc_layers = nn.ModuleList(self.enc_layers)
 
-        temp = {}
-        temp["global_orient"] = rotation_6d_to_matrix(x[:, :6])
-        temp["body_pose"] = rotation_6d_to_matrix(x[:, 6:].unflatten(-1, (-1, 6)))
-        temp["betas"] = data["betas"].to(device)
-        temp["transl"] = data["transl"].to(device)
+        self.enc_layers = []
+        for _ in range(self.num_enc_layers):
+            self.enc_layers.append(Block(D, self.num_heads, mlp_ratio=self.mlp_ratio))
+        self.y_enc_layers = nn.ModuleList(self.enc_layers)
 
-        bmout = self.smpl(**temp)
-        cam = {
-            k.replace("cam_", "", 1): v.to(device)
-            for k, v in data.items()
-            if k.startswith("cam_")
-        }
-        j2d = projection(bmout.joints, cam)
-        y = j2d_to_y(j2d, cam["height"], cam["width"])
-        return y
+        self.dec_layers = []
+        for _ in range(self.num_dec_layers):
+            self.dec_layers.append(
+                DecBlock(D, self.num_heads, mlp_ratio=self.mlp_ratio)
+            )
+        self.xy_dec_layers = nn.ModuleList(self.dec_layers)
 
-    def forward(self, x, y, t, y_block, data):
-        cur_y = self.get_cur_y(x, data)
-        y = y - cur_y
-        # cur_y = self.get_cur_y(x, y, data)
-        # x = torch.cat((x, cur_y), dim=-1)
+        self.dec_layers = []
+        for _ in range(self.num_dec_layers):
+            self.dec_layers.append(
+                DecBlock(D, self.num_heads, mlp_ratio=self.mlp_ratio)
+            )
+        self.xt_dec_layers = nn.ModuleList(self.dec_layers)
 
-        y_block = y_block.float()[:, None]
-        t = self.t_emb(t[:, None])
-        y = self.y_emb(y)
-        y = y * (1 - y_block)
+        self.out_layer = nn.Linear(D, 6)
 
-        ty = torch.cat((t, y), dim=-1)
-        ty = self.ty_emb(ty, t)
+    def forward(self, x, y, t, y_block, **kwargs):
+        # x: B(P6)
+        # y: B(K2)
+        # t: B
+        # y_block: B
+        K = self.num_kps
+        P = self.num_joints
+        B = x.shape[0]
 
-        x_ret = self.denoise(x, ty)
-        return x_ret
+        x = x.view(B, P, 6)
+        y = y.view(B, K, 2)
+
+        t = self.t_emb(t[:, None, None])  # B1D
+
+        y_block = y_block.float()[:, None, None]  # B11
+        y = self.kp_emb(y)  # BKD
+        y = y * (1 - y_block)  # BKD
+        y = y + self.kp_pos_emb[None, :, :]  # BKD
+
+        x = self.x_emb(x)  # BPD
+        x = x + self.x_pos_emb[None, :, :]  # BPD
+
+        for lyr in self.x_enc_layers:
+            x = lyr(x)
+
+        for lyr in self.y_enc_layers:
+            y = lyr(y)
+
+        for i in range(self.num_dec_layers):
+            x = self.xt_dec_layers[i](x, t)
+            x = self.xy_dec_layers[i](x, y)
+
+        x = self.out_layer(x)
+        x = x.view(B, P * 6)
+        return x

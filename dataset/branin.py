@@ -20,17 +20,26 @@ class Branin(Dataset):
         self.range = np.array([[-5, 10], [0, 15]])
 
     def __len__(self):
-        return 10000
+        return 100000
 
     def f(self, x):
         x1 = x[..., 0] * 15 - 5
         x2 = x[..., 1] * 15
         a, b, c, r, s, t = self.a, self.b, self.c, self.r, self.s, self.t
         y = a * (x2 - b * x1**2 + c * x1 - r) ** 2 + s * (1 - t) * torch.cos(x1) + s
-        return y
+        if x.ndim == 1:
+            return y.view(-1)
+        else:
+            return y.view(-1, 1)
 
     def __getitem__(self, idx):
         x = torch.rand(2)
+        y = self.f(x)
+        return {"x": x, "y": y}
+
+    def eval_data(self):
+        x1 = torch.linspace(0, 1, 100)
+        x = torch.cat(torch.meshgrid(x1, x1, indexing="ij"), dim=-1)
         y = self.f(x)
         return {"x": x, "y": y}
 

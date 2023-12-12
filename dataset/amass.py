@@ -119,7 +119,7 @@ class AMASS(Dataset):
     #         [self.__getitem__(idx, [i]) for i in range(0, 5 * 120, 4)]
     #     )
 
-    def viz(self, x, data):
+    def viz(self, x, data, is_gt=False, is_inp=False):
         B = x.shape[0]
         data = copy.deepcopy(data)
 
@@ -130,8 +130,17 @@ class AMASS(Dataset):
         cam = {
             k.replace("cam_", "", 1): v for k, v in data.items() if k.startswith("cam_")
         }
+        if is_inp:
+            bmout.vertices += 10000
+            img = viz_smpl(bmout, self.smpl.faces, cam)
+            img = show_points(dcn(data["j2d"]), img, color="green")
+            return img
+
         img = viz_smpl(bmout, self.smpl.faces, cam)
-        img = show_points(dcn(data["j2d"]), img)
+        img = show_points(dcn(data["j2d"]), img, color="green")
+        if not is_gt:
+            pred_j2d = projection(bmout.joints, cam)
+            img = show_points(pred_j2d, img, color="red")
         return img
 
 

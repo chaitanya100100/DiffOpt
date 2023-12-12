@@ -9,8 +9,8 @@ import numpy as np
 import torch.optim.lr_scheduler as lr_scheduler
 
 from utils.ddpm_utils import ddpm_schedules, get_cur_y
-from config.pose_config import Config
 from model.pose_model import PoseModelMLP, PoseModelMLP_Res
+from model.pose_model_tsfm import PoseTransformer
 from dataset.amass import AMASS, amass_collate_fn
 from utils.smpl import MySMPL
 
@@ -21,7 +21,13 @@ class DDPM(nn.Module):
         self.cfg = cfg
 
         # self.nn_model = PoseModelMLP_Res(cfg)
-        self.nn_model = PoseModelMLP(cfg)
+        if cfg.model_type == "mlp":
+            self.nn_model = PoseModelMLP(cfg)
+        elif cfg.model_type == "tsfm":
+            self.nn_model = PoseTransformer(cfg)
+        else:
+            raise ValueError(f"Unknown model type {cfg.model_type}")
+
         self.pass_data = isinstance(self.nn_model, PoseModelMLP_Res)
         print("Number of parameters", sum(p.numel() for p in self.parameters()))
 
@@ -33,7 +39,7 @@ class DDPM(nn.Module):
         self.drop_prob = cfg.drop_prob
 
         w = torch.tensor([cfg.joint_importance[i] for i in range(24)]).float()
-        w = w.pow(2)
+        # w = w.pow(2)
         w = 24 * w / w.sum()
         self.register_buffer("joint_weight", w, persistent=False)
         print(w)
@@ -100,23 +106,35 @@ class DDPM(nn.Module):
         return x_i, x_i_store
 
 
-def validate_pose(ddpm, dataloader, cfg, device, ep):
+def validate_pose(ddpm, dataloader, cfg, device, ep, num=1):
     ddpm.eval()
     dataset = dataloader.dataset
-    data = next(iter(dataloader))
-    data = {k: v[:8] for k, v in data.items()}
-    for w_i, w in enumerate(cfg.ws_test):
-        # imgs_gt = dataset.viz(data["x"], data)
-        # imgs_pred = imgs_gt.copy()
+    h, w = 50, 150
+    for i in range(num):
+        # i = i * 100
+        # data = dataset.get_sequence_data(i)
+        data = next(iter(dataloader))
+        data = {k: v[::8] for k, v in data.items()}
+        imgs_inp = dataset.viz(data["x"], data, is_inp=True)
+        imgs_gt = dataset.viz(data["x"], data, is_gt=True)
+        imgs_inp = imgs_inp[:, h:-h, w:-w]
+        imgs_gt = imgs_gt[:, h:-h, w:-w]
+        imgs_pred = []
+        for w_i, wval in enumerate(cfg.ws_test):
+            # imgs_gt = dataset.viz(data["x"], data)
+            # imgs_pred = imgs_gt.copy()
 
-        x_gen, x_gen_store = ddpm.sample(data["y"].to(device), guide_w=w, data=data)
-        imgs_pred = dataset.viz(x_gen.cpu(), data)
-        imgs_gt = dataset.viz(data["x"], data)
+            x_gen, x_gen_store = ddpm.sample(
+                data["y"].to(device), guide_w=wval, data=data
+            )
+            imgs_pred_w = dataset.viz(x_gen.cpu(), data)
+            imgs_pred_w = imgs_pred_w[:, h:-h, w:-w]
+            imgs_pred.append(imgs_pred_w)
 
-        imgs = np.concatenate([imgs_pred, imgs_gt], 2)
+        imgs = np.concatenate([imgs_inp] + imgs_pred + [imgs_gt], 2)
         for ii, img in enumerate(imgs):
             img = Image.fromarray(img)
-            img.save(cfg.save_dir + f"/ep_{ep}_w_{w_i}_img_{ii}.png")
+            img.save(cfg.save_dir + f"/ep_{ep}_seq_{i}_img_{ii}.png")
 
 
 def evaluate_pose(ddpm, dataloader, cfg, device, ep):
@@ -124,7 +142,8 @@ def evaluate_pose(ddpm, dataloader, cfg, device, ep):
     ddpm.eval()
     smpl = MySMPL().to(device)
 
-    validate_pose(ddpm, dataloader, cfg, device, ep)
+    validate_pose(ddpm, dataloader, cfg, device, ep, num=10)
+    return
 
     for w_i, w in enumerate(cfg.ws_test):
         y_gt = []
@@ -143,8 +162,8 @@ def evaluate_pose(ddpm, dataloader, cfg, device, ep):
         y_gt = y_gt[keep]
         y_pred = y_pred[keep]
         err = (y_gt - y_pred).abs()
-        # err = err.sort()[0]
-        # err = err[: int(err.shape[0] * 0.9)]
+        err = err.sort()[0]
+        err = err[: int(err.shape[0] * 0.98)]
         err = err.mean()
         print(f"w {w}, err {err} using {keep.float().mean()*100}%")
 
@@ -215,10 +234,9 @@ def train_pose(cfg):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True, type=str)
     parser.add_argument("--save_dir", default="./data/check/")
     parser.add_argument("--subset", default="oneseq")
-    parser.add_argument("--hidden_dim", default=1024, type=int)
-    parser.add_argument("--num_layers", default=6, type=int)
     parser.add_argument("--n_epoch", default=50)
     parser.add_argument("--batch_size", default=16)
     parser.add_argument("--ckpt_path", default=None)
@@ -226,11 +244,18 @@ if __name__ == "__main__":
     parser.add_argument("--validate", default=False, action="store_true")
     args = parser.parse_args()
 
+    if args.config == "tsfm":
+        from config.pose_config_tsfm import Config
+    elif args.config == "nh4d512":
+        from config.pose_config_nh4d512 import Config
+    elif args.config == "nh6d1024":
+        from config.pose_config_nh6d1024 import Config
+    else:
+        raise ValueError(f"Unknown config {args.config}")
+
     cfg = Config()
     cfg.save_dir = args.save_dir
     cfg.subset = args.subset
-    cfg.hidden_dim = args.hidden_dim
-    cfg.num_layers = args.num_layers
     cfg.n_epoch = args.n_epoch
     cfg.ckpt_path = args.ckpt_path
     cfg.lrate = args.lrate

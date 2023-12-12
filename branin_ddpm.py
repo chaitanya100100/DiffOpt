@@ -4,13 +4,11 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from PIL import Image
-import numpy as np
 import torch.optim.lr_scheduler as lr_scheduler
 
 from utils.ddpm_utils import ddpm_schedules
-from config.pose_config import Config
 from model.pose_model import PoseModelMLP
+from dataset.branin import Branin
 
 
 class DDPM(nn.Module):
@@ -19,6 +17,8 @@ class DDPM(nn.Module):
         self.cfg = cfg
 
         self.nn_model = PoseModelMLP(cfg)
+
+        self.pass_data = False
         print("Number of parameters", sum(p.numel() for p in self.parameters()))
 
         betas = cfg.betas
@@ -28,7 +28,9 @@ class DDPM(nn.Module):
         self.n_T = cfg.n_T
         self.drop_prob = cfg.drop_prob
 
-    def forward(self, x, y):
+    def forward(self, x, y, data=None):
+        if not self.pass_data:
+            data = None
         device = x.device
         B = x.shape[0]
 
@@ -40,11 +42,15 @@ class DDPM(nn.Module):
 
         y_block = torch.bernoulli(torch.zeros(B) + self.drop_prob).to(device)
 
-        loss = (noise - self.nn_model(x_t, y, _ts / self.n_T, y_block)).square()
+        loss = (
+            noise - self.nn_model(x_t, y, _ts / self.n_T, y_block, data=data)
+        ).square()
         return loss.mean()
 
     @torch.no_grad()
-    def sample(self, y, guide_w=0.0):
+    def sample(self, y, guide_w=0.0, data=None):
+        if not self.pass_data:
+            data = None
         cfg = self.cfg
         device = y.device
         B = y.shape[0]
@@ -53,6 +59,8 @@ class DDPM(nn.Module):
 
         y_block = torch.cat([torch.zeros(B), torch.ones(B)]).to(device)
         y = torch.cat([y, y], dim=0)
+        if data is not None:
+            data = {k: torch.cat([v, v], dim=0) for k, v in data.items()}
 
         x_i_store = []
         for i in range(self.n_T, 0, -1):
@@ -64,7 +72,7 @@ class DDPM(nn.Module):
             t_is = torch.tensor([i / self.n_T] * (2 * B)).to(device)
 
             # split predictions and compute weighting
-            eps = self.nn_model(x_i, y, t_is, y_block)
+            eps = self.nn_model(x_i, y, t_is, y_block, data=data)
             eps1 = eps[:B]
             eps2 = eps[B:]
             eps = (1 + guide_w) * eps1 - guide_w * eps2
@@ -81,32 +89,36 @@ class DDPM(nn.Module):
 
 
 def validate_branin(ddpm, dataloader, cfg, device, ep):
+    ddpm.eval()
     dataset = dataloader.dataset
-    y = torch.arange(0, 1, 0.01)
+    data = dataset.eval_data()
     for w_i, w in enumerate(cfg.ws_test):
         # imgs_gt = dataset.viz(data["x"], data)
         # imgs_pred = imgs_gt.copy()
 
-        x_gen, x_gen_store = ddpm.sample(data["y"].to(device), guide_w=w)
-        imgs_pred = dataset.viz(x_gen.cpu(), data)
-        imgs_gt = dataset.viz(data["x"], data)
+        x_gen, x_gen_store = ddpm.sample(data["y"].to(device), guide_w=w, data=data)
+        y_gen = dataset.f(x_gen).cpu()
 
-        imgs = np.concatenate([imgs_pred, imgs_gt], 2)
-        for ii, img in enumerate(imgs):
-            img = Image.fromarray(img)
-            img.save(cfg.save_dir + f"/ep_{ep}_w_{w_i}_img_{ii}.png")
+        err = (data["y"] - y_gen).abs()
+        # err = err.sort()[0]
+        # err = err[: int(err.shape[0] * 0.98)]
+        err = err.mean()
+        print(f"w {w}, err {err}")
+
+
+def evaluate_branin(ddpm, dataloader, cfg, device, ep):
+    validate_branin(ddpm, dataloader, cfg, device, ep)
 
 
 def train_branin(cfg):
     os.makedirs(cfg.save_dir, exist_ok=False)
 
-    dataset = AMASS(cfg)
+    dataset = Branin(cfg)
     dataloader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
-        collate_fn=amass_collate_fn,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,7 +132,7 @@ def train_branin(cfg):
         print("only validating")
         ddpm.eval()
         with torch.no_grad():
-            validate_pose(ddpm, dataloader, cfg, device, 0)
+            validate_branin(ddpm, dataloader, cfg, device, 0)
         ddpm.train()
         return
 
@@ -156,7 +168,7 @@ def train_branin(cfg):
         # followed by real images (bottom rows)
         ddpm.eval()
         with torch.no_grad():
-            validate_pose(ddpm, dataloader, cfg, device, ep)
+            validate_branin(ddpm, dataloader, cfg, device, ep)
         ddpm.train()
 
         # optionally save model
@@ -167,23 +179,23 @@ def train_branin(cfg):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--save_dir", default="./data/pose_oneseq/")
-    parser.add_argument("--subset", default="oneseq")
-    parser.add_argument("--hidden_dim", default=1024)
-    parser.add_argument("--num_layers", default=6)
-    parser.add_argument("--n_epoch", default=50)
+    parser.add_argument("--save_dir", default="./data/branin_1/")
+    parser.add_argument("--hidden_dim", default=64)
+    parser.add_argument("--num_layers", default=4)
+    parser.add_argument("--n_epoch", default=100)
     parser.add_argument("--ckpt_path", default=None)
     parser.add_argument("--lrate", default=1e-4, type=float)
     parser.add_argument("--validate", default=False, action="store_true")
     args = parser.parse_args()
 
+    from config.branin_config import Config
+
     cfg = Config()
     cfg.save_dir = args.save_dir
-    cfg.subset = args.subset
     cfg.hidden_dim = args.hidden_dim
     cfg.num_layers = args.num_layers
     cfg.n_epoch = args.n_epoch
     cfg.ckpt_path = args.ckpt_path
     cfg.lrate = args.lrate
     cfg.validate = args.validate
-    train_pose(cfg)
+    train_branin(cfg)
